@@ -6,17 +6,22 @@ tested in the real Telegram chat before moving to the next.
 ## Phase 0 — Scaffolding ✅
 Repo, package layout, config loading, `.env` handling, README.
 
-## Phase 1 — Telegram connection ✅ (current)
+## Phase 1 — Telegram connection ✅
 - Bot connects via long polling (no server/webhook needed, runs on any machine).
 - `/start` and `/ping` commands, plain acknowledgement of any text message.
 - User allowlist (`ALLOWED_USER_IDS`) so only you can talk to the bot.
 
 **Done when:** you message the bot from your phone and it replies.
 
-## Phase 2 — Chat history & storage
-- SQLite database (single file, zero setup).
-- Persist every incoming/outgoing message with timestamp and user id.
-- `/history` command to show recent messages.
+## Phase 2 — Chat history & storage ✅ (current)
+- SQLite database (stdlib `sqlite3`, single file under `data/`, zero setup).
+  Chosen over DuckDB: this is an OLTP workload (many small inserts), DuckDB
+  is an OLAP engine. All SQL isolated in `tracker/storage.py` behind a small
+  `Storage` interface, so a future move to Postgres/Mongo swaps one module.
+- Persist every incoming/outgoing text message with timestamp and user id.
+- Versioned migrations via `PRAGMA user_version` — later phases add tables
+  by appending to the `MIGRATIONS` list.
+- `/history` command shows the last 20 messages.
 
 **Done when:** restarting the bot doesn't lose history and `/history` works.
 This is the foundation for AI context and all trackers.

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int] = field(default_factory=frozenset)
+    db_path: str = "data/lifelog.db"
 
 
 def load_settings() -> Settings:
@@ -24,4 +25,5 @@ def load_settings() -> Settings:
     allowed = frozenset(
         int(part) for part in (p.strip() for p in raw_ids.split(",")) if part
     )
-    return Settings(bot_token=token, allowed_user_ids=allowed)
+    db_path = os.getenv("DATABASE_PATH", "").strip() or "data/lifelog.db"
+    return Settings(bot_token=token, allowed_user_ids=allowed, db_path=db_path)

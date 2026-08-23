@@ -8,8 +8,12 @@ Built incrementally, one feature at a time — see [ROADMAP.md](ROADMAP.md).
 
 ## Current status
 
-**Phase 1 — Telegram connection.** The bot connects via long polling, replies
-to `/start` and `/ping`, and acknowledges any text message. No AI or storage yet.
+**Phase 2 — Chat history & storage.** Every text message in both directions is
+persisted to a local SQLite file (`data/lifelog.db` by default, configurable
+via `DATABASE_PATH`). `/history` shows the last 20 messages. SQLite was chosen
+over DuckDB because this workload is many small writes (OLTP), not analytics;
+all SQL is isolated in `tracker/storage.py` so a later move to Postgres or
+MongoDB only replaces that one module. No AI yet — that's Phase 3.
 
 ## Setup
 
@@ -31,7 +35,7 @@ to `/start` and `/ping`, and acknowledges any text message. No AI or storage yet
 
 5. **Test**: message your bot on Telegram. `/start` replies with your Telegram
    user id — put that id into `ALLOWED_USER_IDS` in `.env` and restart so only
-   you can use the bot.
+   you can use the bot. Send a few messages, then `/history` to see them back.
 
 ## Project layout
 
@@ -39,7 +43,9 @@ to `/start` and `/ping`, and acknowledges any text message. No AI or storage yet
 tracker/
   bot.py        # Telegram handlers + entry point
   config.py     # .env loading and validation
+  storage.py    # SQLite persistence (all SQL lives here)
   __main__.py   # allows `python -m tracker`
+data/           # SQLite database file (gitignored, created on first run)
 ROADMAP.md      # phased plan
 .env.example    # template for local config (never commit .env)
 ```
