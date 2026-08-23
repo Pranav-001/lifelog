@@ -11,6 +11,7 @@ falls back to Phase 2 echo behaviour.
 import json
 import logging
 
+import httpx
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -136,6 +137,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     history = storage.recent_messages(chat_id, limit=CONTEXT_MESSAGES)
     try:
         result = await ai.understand(history)
+    except httpx.HTTPStatusError as e:
+        logger.exception("OpenRouter call failed")
+        if e.response.status_code == 429:
+            await _reply(
+                update,
+                context,
+                "Saved your message, but OpenRouter is rate-limiting us right now. "
+                "Free models allow ~20 requests/min and ~50/day — wait a bit and "
+                "resend, or set a paid OPENROUTER_MODEL / add credits.",
+            )
+        else:
+            await _reply(
+                update,
+                context,
+                f"Saved your message, but OpenRouter returned an error "
+                f"({e.response.status_code}) — it stays in history, resend later.",
+            )
+        return
     except Exception:
         logger.exception("OpenRouter call failed")
         await _reply(

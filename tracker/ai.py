@@ -7,6 +7,7 @@ output is requested in the prompt and parsed defensively, instead of relying
 on per-model JSON modes.
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -19,6 +20,10 @@ from tracker.storage import Message
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Backoff for 429/5xx. Free-tier models are limited per minute, so waiting
+# a few seconds often succeeds where an instant retry won't.
+RETRY_DELAYS = [2, 5]
 
 VALID_CATEGORIES = {"finance", "gym", "diet", "note", "question", "other"}
 
@@ -68,15 +73,9 @@ class AIClient:
             role = "user" if m.direction == "in" else "assistant"
             messages.append({"role": role, "content": m.text})
 
-        response = await self._client.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "X-Title": "lifelog",
-            },
-            json={"model": self._model, "messages": messages, "temperature": 0.3},
+        response = await self._post(
+            {"model": self._model, "messages": messages, "temperature": 0.3}
         )
-        response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
 
         try:
@@ -93,6 +92,31 @@ class AIClient:
             data=parsed.get("data"),
             reply=str(parsed.get("reply") or "Noted!"),
         )
+
+    async def _post(self, payload: dict) -> httpx.Response:
+        attempts = len(RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            response = await self._client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "X-Title": "lifelog",
+                },
+                json=payload,
+            )
+            if response.status_code == 429 or response.status_code >= 500:
+                logger.warning(
+                    "OpenRouter %s on attempt %d/%d: %s",
+                    response.status_code,
+                    attempt + 1,
+                    attempts,
+                    response.text[:300],
+                )
+                if attempt < len(RETRY_DELAYS):
+                    await asyncio.sleep(RETRY_DELAYS[attempt])
+                    continue
+            response.raise_for_status()
+            return response
 
     async def close(self) -> None:
         await self._client.aclose()
