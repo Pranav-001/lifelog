@@ -13,7 +13,7 @@ Built incrementally, one feature at a time — see [ROADMAP.md](ROADMAP.md).
 [OpenRouter](https://openrouter.ai) (any model, set `OPENROUTER_MODEL`),
 classified, and stored as structured entries in SQLite. Summary commands:
 
-- `/spend` — today / this week / this month totals + recent expenses
+- `/spend` — today / week / month totals, category breakdown, recent expenses
 - `/workout` — sessions this week, weekly volume, last session detail
 - `/diet` — today's meals, estimated calories, protein/fat/carbs
 - `/foods` — your personal food database (per-100g macros)
@@ -69,7 +69,8 @@ tracker/
   config.py     # .env loading and validation
   storage.py    # SQLite persistence (all SQL lives here)
   ai.py         # OpenRouter client: classify + extract + reply
-  summaries.py  # pure functions: /spend, /workout, /diet text
+  finance.py    # expense categories, auto-tag validation, /spend text
+  summaries.py  # pure functions: /workout, /diet text
   nutrition.py  # deterministic calorie/macro math from the foods table
   __main__.py   # allows `python -m tracker`
 dashboard.py    # Streamlit dashboard over the SQLite data (read-only)

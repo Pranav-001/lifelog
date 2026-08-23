@@ -23,11 +23,12 @@ from telegram.ext import (
     filters,
 )
 
+from tracker import finance
 from tracker.ai import AIClient
 from tracker.config import Settings, load_settings
 from tracker.nutrition import enrich_diet
 from tracker.storage import Entry, Storage
-from tracker.summaries import diet_summary, spend_summary, workout_summary
+from tracker.summaries import diet_summary, workout_summary
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,11 @@ def _entries_for(
 async def cmd_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(context.bot_data["settings"], update):
         return
-    entries = _entries_for(context, update.message.chat_id, "finance", lookback_days=45)
-    await _reply(update, context, spend_summary(entries, datetime.now().astimezone()))
+    storage: Storage = context.bot_data["storage"]
+    now = datetime.now().astimezone()
+    since = (now.date() - timedelta(days=45)).isoformat()
+    rows = storage.expenses_since(update.message.chat_id, since)
+    await _reply(update, context, finance.spend_summary(rows, now))
 
 
 async def cmd_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -245,7 +249,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif result.category == "diet" and isinstance(data, dict):
         data = enrich_diet(data, {f.name: f for f in foods})
 
-    if result.category is not None and data is not None:
+    expense_line: str | None = None
+    if result.category == "finance" and isinstance(data, dict):
+        parsed = finance.normalize(data, datetime.now().astimezone().date())
+        if parsed is not None:
+            storage.add_expense(
+                chat_id=chat_id,
+                kind=parsed.kind,
+                amount=parsed.amount,
+                category=parsed.category,
+                spent_at=parsed.spent_at.isoformat(),
+                currency=parsed.currency,
+                description=parsed.description,
+                merchant=parsed.merchant,
+                tags=parsed.tags,
+                message_id=storage.find_message_id(chat_id, update.message.message_id),
+            )
+            logger.info("Logged expense: %s", parsed)
+            expense_line = finance.confirmation_line(parsed)
+
+    if result.category is not None and data is not None and expense_line is None:
         storage.save_entry(
             chat_id=chat_id,
             category=result.category,
@@ -260,6 +283,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"\n\n📊 {data['calories_estimate']} kcal • P {data['protein_g']}g"
             f" • F {data['fat_g']}g • C {data['carbs_g']}g (from your food data)"
         )
+    if expense_line is not None:
+        reply += f"\n\n🧾 {expense_line}"
     if result.category is not None:
         reply = f"{reply}\n#{result.category}"
     await _reply(update, context, reply)

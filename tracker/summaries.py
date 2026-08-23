@@ -1,8 +1,9 @@
-"""Phase 4: tracker summaries computed from stored entries.
+"""Gym and diet summaries computed from stored entries.
 
 Pure functions: they take entries plus 'now' and return reply text, so they
 are unit-testable without Telegram or the database. Day boundaries use the
 timezone carried by 'now' (the bot passes local time); created_at is UTC.
+Finance has its own module: tracker/finance.py.
 """
 
 import json
@@ -21,50 +22,6 @@ def _data(entry: Entry) -> dict:
 
 def _local_date(entry: Entry, now: datetime) -> date:
     return datetime.fromisoformat(entry.created_at).astimezone(now.tzinfo).date()
-
-
-def spend_summary(entries: list[Entry], now: datetime) -> str:
-    today = now.date()
-    week_start = today - timedelta(days=today.weekday())
-    month_start = today.replace(day=1)
-
-    expenses: list[tuple[date, float, str]] = []
-    income_this_month = 0.0
-    for entry in entries:
-        data = _data(entry)
-        amount = data.get("amount")
-        if not isinstance(amount, (int, float)):
-            continue
-        day = _local_date(entry, now)
-        if data.get("kind") == "income":
-            if day >= month_start:
-                income_this_month += amount
-            continue
-        expenses.append((day, float(amount), str(data.get("description") or "?")))
-
-    if not expenses and not income_this_month:
-        return "No finance entries yet — tell me things like 'spent 250 on lunch'."
-
-    def total(since: date) -> float:
-        return sum(amount for day, amount, _ in expenses if day >= since)
-
-    lines = [
-        "💸 Spending",
-        f"Today: {total(today):,.0f}",
-        f"This week: {total(week_start):,.0f}",
-        f"This month: {total(month_start):,.0f}",
-    ]
-    if income_this_month:
-        lines.append(f"Income this month: {income_this_month:,.0f}")
-    recent = [x for x in expenses if x[0] >= today - timedelta(days=6)][-5:]
-    if recent:
-        lines.append("")
-        lines.append("Recent:")
-        lines.extend(
-            f"• {day.strftime('%d %b')} — {amount:,.0f} {desc}"
-            for day, amount, desc in recent
-        )
-    return "\n".join(lines)
 
 
 def workout_summary(entries: list[Entry], now: datetime) -> str:

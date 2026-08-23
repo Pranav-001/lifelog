@@ -43,8 +43,16 @@ Summaries are computed from the `entries` table the AI already fills — no
 separate per-tracker tables needed yet. Logic lives in `tracker/summaries.py`
 as pure functions; day boundaries use local time (storage is UTC).
 
-### 4a. Finance
-- `/spend` — today / this week / this month totals, income, recent expenses.
+### 4a. Finance (revamped as its own module)
+- Dedicated `expenses` table (migration v4, old JSON entries backfilled):
+  kind, amount, currency, description, merchant, purpose-based category,
+  tags, and `spent_at` — the day the money moved ("yesterday" works),
+  separate from the logging timestamp.
+- Fixed category taxonomy in `tracker/finance.py`, injected into the AI
+  prompt so the model can only pick valid categories; auto-tagging with
+  0-3 cross-cutting tags (trip, office...); everything validated in Python.
+- `/spend` — today / week / month totals, income, category breakdown,
+  recent expenses with dates and tags.
 
 ### 4b. Gym
 - `/workout` — sessions this week, weekly volume (sets × reps × weight),

@@ -15,6 +15,7 @@ from datetime import date
 
 import httpx
 
+from tracker.finance import CATEGORIES as EXPENSE_CATEGORIES
 from tracker.storage import Food, Message
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,11 @@ The user sends free-form notes about their life. Today is {today}.
 For the LATEST user message:
 1. Classify it into exactly one category: finance, gym, diet, food_info, note, question, other.
 2. Extract structured data for that category:
-   - finance: {"kind": "expense" or "income", "amount": number, "currency": string or null, "description": string}
+   - finance: {"kind": "expense" or "income", "amount": number, "currency": string or null, "description": string, "merchant": string or null, "category": string, "tags": [strings], "date": "YYYY-MM-DD" or null}
+     category MUST be one of: {expense_categories} (categorise by purpose, not by shop).
+     date: the day the money actually moved if the user mentions one ("yesterday",
+     "last friday" — today is {today}); null means today. Never a future date.
+     tags: 0-3 short lowercase cross-cutting labels like "office", "trip-goa", "family".
    - gym: {"exercises": [{"name": string, "sets": number or null, "reps": number or null, "weight_kg": number or null}], "notes": string or null}
    - diet (user ate/drank something): {"meal": "breakfast", "lunch", "dinner" or "snack" (or null), "items": [{"name": string, "grams": number or null}], "calories_estimate": number or null, "protein_g": number or null, "fat_g": number or null, "carbs_g": number or null}
      For items: use the exact name from KNOWN FOODS when it matches; estimate grams
@@ -94,16 +99,14 @@ class AIClient:
         self, history: list[Message], foods: list[Food] | None = None
     ) -> Understanding:
         system = SYSTEM_PROMPT.replace("{today}", date.today().isoformat())
+        system = system.replace("{expense_categories}", ", ".join(EXPENSE_CATEGORIES))
         system += _foods_block(foods or [])
         messages = [{"role": "system", "content": system}]
         for m in history:
             role = "user" if m.direction == "in" else "assistant"
             messages.append({"role": role, "content": m.text})
 
-        response = await self._post(
-            {"model": self._model, "messages": messages, "temperature": 0.3}
-        )
-        content = response.json()["choices"][0]["message"]["content"]
+        content = await self.complete(messages)
 
         try:
             parsed = _extract_json(content)
@@ -119,6 +122,12 @@ class AIClient:
             data=parsed.get("data"),
             reply=str(parsed.get("reply") or "Noted!"),
         )
+
+    async def complete(self, messages: list[dict]) -> str:
+        response = await self._post(
+            {"model": self._model, "messages": messages, "temperature": 0.3}
+        )
+        return response.json()["choices"][0]["message"]["content"]
 
     async def _post(self, payload: dict) -> httpx.Response:
         attempts = len(RETRY_DELAYS) + 1

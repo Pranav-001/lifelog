@@ -17,9 +17,12 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from tracker.finance import CATEGORIES as EXPENSE_CATEGORIES
+
 load_dotenv()
 DB_PATH = os.getenv("DATABASE_PATH", "").strip() or "data/lifelog.db"
 CATEGORIES = ["finance", "gym", "diet", "food_info", "note", "question", "other"]
+EXPENSE_CATEGORY_OPTIONS = EXPENSE_CATEGORIES + ["income"]
 
 st.set_page_config(page_title="Lifelog dashboard", page_icon="📒", layout="wide")
 st.title("Lifelog dashboard")
@@ -50,13 +53,20 @@ def load_tables(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
             " fat_per_100g, carbs_per_100g FROM foods ORDER BY name",
             conn,
         )
+        expenses = pd.read_sql_query(
+            "SELECT id, chat_id, kind, amount, currency, description, merchant,"
+            " category, tags, spent_at FROM expenses ORDER BY spent_at DESC, id DESC",
+            conn,
+        )
     finally:
         conn.close()
     for df in (messages, entries):
         if not df.empty:
             df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
             df["date"] = df["created_at"].dt.tz_convert(LOCAL_TZ).dt.date
-    return messages, entries, foods
+    if not expenses.empty:
+        expenses["spent_at"] = pd.to_datetime(expenses["spent_at"]).dt.date
+    return messages, entries, foods, expenses
 
 
 def write_many(statements: list[tuple[str, tuple]]) -> None:
@@ -89,7 +99,7 @@ def opt(value):
 LOCAL_TZ = datetime.now().astimezone().tzinfo
 TODAY = datetime.now(LOCAL_TZ).date()
 
-messages, entries, foods = load_tables(DB_PATH)
+messages, entries, foods, expenses = load_tables(DB_PATH)
 
 with st.sidebar:
     st.caption(f"Database: {DB_PATH}")
@@ -133,15 +143,11 @@ with tab_overview:
         )
 
 with tab_finance:
-    fin = entries[entries["category"] == "finance"].copy() if not entries.empty else pd.DataFrame()
-    if fin.empty:
-        st.info("No finance entries yet — try telling the bot 'spent 250 on lunch'.")
+    if expenses.empty:
+        st.info("No expenses yet — try telling the bot 'spent 250 on lunch'.")
     else:
-        parsed = fin["data"].map(parse_json)
-        fin["kind"] = parsed.map(lambda d: d.get("kind") or "expense")
-        fin["amount"] = pd.to_numeric(parsed.map(lambda d: d.get("amount")), errors="coerce")
-        fin["description"] = parsed.map(lambda d: d.get("description"))
-        exp = fin[(fin["kind"] != "income") & fin["amount"].notna()].copy()
+        exp = expenses[expenses["kind"] != "income"].copy()
+        exp["date"] = exp["spent_at"]
 
         def spent(day_from, day_to=None):
             sel = exp[exp["date"] >= day_from]
@@ -190,8 +196,24 @@ with tab_finance:
                 alt.layer(bars, line).resolve_scale(y="independent").properties(height=280),
                 use_container_width=True,
             )
+            by_cat = (
+                month.groupby("category", as_index=False)["amount"]
+                .sum()
+                .sort_values("amount", ascending=False)
+            )
+            cat_chart = (
+                alt.Chart(by_cat)
+                .mark_bar(color="#4c78a8")
+                .encode(
+                    x=alt.X("amount:Q", title="spend"),
+                    y=alt.Y("category:N", sort="-x", title=None),
+                    tooltip=["category:N", "amount:Q"],
+                )
+                .properties(height=220, title="This month by category")
+            )
+            st.altair_chart(cat_chart, use_container_width=True)
         st.dataframe(
-            fin[["created_at", "kind", "amount", "description", "message"]],
+            expenses[["spent_at", "kind", "amount", "category", "tags", "description", "merchant"]],
             use_container_width=True,
             hide_index=True,
         )
@@ -358,6 +380,78 @@ with tab_edit:
                             (row["category"], row["data"], rid),
                         )
                     )
+            for message in errors:
+                st.error(message)
+            if statements:
+                write_many(statements)
+                st.success(f"Applied {len(statements)} change(s).")
+                st.cache_data.clear()
+                st.rerun()
+            elif not errors:
+                st.info("No changes to save.")
+
+    st.subheader("Expenses")
+    if expenses.empty:
+        st.info("No expenses yet.")
+    else:
+        exp_grid = expenses[
+            ["id", "spent_at", "kind", "amount", "category", "tags", "description", "merchant"]
+        ].head(200).copy()
+        exp_grid.insert(0, "delete", False)
+        edited_exp = st.data_editor(
+            exp_grid,
+            column_config={
+                "delete": st.column_config.CheckboxColumn("delete"),
+                "spent_at": st.column_config.DateColumn("spent on"),
+                "kind": st.column_config.SelectboxColumn("kind", options=["expense", "income"]),
+                "amount": st.column_config.NumberColumn("amount", min_value=0.0),
+                "category": st.column_config.SelectboxColumn(
+                    "category", options=EXPENSE_CATEGORY_OPTIONS
+                ),
+                "tags": st.column_config.TextColumn('tags (JSON, e.g. ["office"])'),
+            },
+            disabled=["id"],
+            hide_index=True,
+            key="expenses_editor",
+        )
+        if st.button("💾 Save expense changes"):
+            original = exp_grid.set_index("id")
+            statements, errors = [], []
+            editable = ["spent_at", "kind", "amount", "category", "tags", "description", "merchant"]
+            for _, row in edited_exp.iterrows():
+                rid = int(row["id"])
+                if row["delete"]:
+                    statements.append(("DELETE FROM expenses WHERE id = ?", (rid,)))
+                    continue
+                before = original.loc[rid]
+                if all(row[c] == before[c] for c in editable):
+                    continue
+                try:
+                    tags = json.loads(row["tags"] or "[]")
+                    assert isinstance(tags, list)
+                except (TypeError, ValueError, AssertionError):
+                    errors.append(f"Expense {rid}: tags must be a JSON list — skipped.")
+                    continue
+                if pd.isna(row["amount"]) or row["amount"] <= 0:
+                    errors.append(f"Expense {rid}: amount must be positive — skipped.")
+                    continue
+                statements.append(
+                    (
+                        "UPDATE expenses SET spent_at = ?, kind = ?, amount = ?,"
+                        " category = ?, tags = ?, description = ?, merchant = ?"
+                        " WHERE id = ?",
+                        (
+                            str(row["spent_at"]),
+                            row["kind"],
+                            float(row["amount"]),
+                            row["category"],
+                            json.dumps([str(t) for t in tags]),
+                            row["description"] or None,
+                            row["merchant"] or None,
+                            rid,
+                        ),
+                    )
+                )
             for message in errors:
                 st.error(message)
             if statements:

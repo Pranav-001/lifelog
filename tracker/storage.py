@@ -4,6 +4,7 @@ All SQL lives in this module, behind the Storage class. If we outgrow SQLite
 (Postgres, Mongo), this is the only file to replace.
 """
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -49,6 +50,41 @@ MIGRATIONS = [
     );
     CREATE UNIQUE INDEX idx_foods_chat_name ON foods (chat_id, name);
     """,
+    """
+    CREATE TABLE expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER REFERENCES messages(id),
+        kind TEXT NOT NULL DEFAULT 'expense' CHECK (kind IN ('expense', 'income')),
+        amount REAL NOT NULL,
+        currency TEXT,
+        description TEXT,
+        merchant TEXT,
+        category TEXT NOT NULL DEFAULT 'other',
+        tags TEXT NOT NULL DEFAULT '[]',
+        spent_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_expenses_chat_date ON expenses (chat_id, spent_at, id);
+    INSERT INTO expenses (chat_id, message_id, kind, amount, currency,
+                          description, category, tags, spent_at, created_at)
+    SELECT
+        chat_id,
+        message_id,
+        CASE WHEN json_extract(data, '$.kind') IN ('expense', 'income')
+             THEN json_extract(data, '$.kind') ELSE 'expense' END,
+        CAST(json_extract(data, '$.amount') AS REAL),
+        json_extract(data, '$.currency'),
+        json_extract(data, '$.description'),
+        CASE WHEN json_extract(data, '$.kind') = 'income'
+             THEN 'income' ELSE 'other' END,
+        '[]',
+        substr(created_at, 1, 10),
+        created_at
+    FROM entries
+    WHERE category = 'finance'
+      AND CAST(json_extract(data, '$.amount') AS REAL) > 0;
+    """,
 ]
 
 
@@ -69,6 +105,21 @@ class Entry:
     chat_id: int
     category: str
     data: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Expense:
+    id: int
+    chat_id: int
+    kind: str
+    amount: float
+    currency: str | None
+    description: str | None
+    merchant: str | None
+    category: str
+    tags: str  # JSON array
+    spent_at: str  # YYYY-MM-DD (local day)
     created_at: str
 
 
@@ -181,6 +232,105 @@ class Storage:
             )
             for row in rows
         ]
+
+    def add_expense(
+        self,
+        *,
+        chat_id: int,
+        kind: str,
+        amount: float,
+        category: str,
+        spent_at: str,
+        currency: str | None = None,
+        description: str | None = None,
+        merchant: str | None = None,
+        tags: list[str] | None = None,
+        message_id: int | None = None,
+    ) -> int:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO expenses (chat_id, message_id, kind, amount, currency,"
+                " description, merchant, category, tags, spent_at, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    message_id,
+                    kind,
+                    amount,
+                    currency,
+                    description,
+                    merchant,
+                    category,
+                    json.dumps(tags or []),
+                    spent_at,
+                    created_at,
+                ),
+            )
+        return cursor.lastrowid
+
+    def expenses_since(self, chat_id: int, since_spent_at: str) -> list[Expense]:
+        rows = self._conn.execute(
+            "SELECT id, chat_id, kind, amount, currency, description, merchant,"
+            " category, tags, spent_at, created_at FROM expenses"
+            " WHERE chat_id = ? AND spent_at >= ? ORDER BY spent_at, id",
+            (chat_id, since_spent_at),
+        ).fetchall()
+        return [
+            Expense(
+                id=row["id"],
+                chat_id=row["chat_id"],
+                kind=row["kind"],
+                amount=row["amount"],
+                currency=row["currency"],
+                description=row["description"],
+                merchant=row["merchant"],
+                category=row["category"],
+                tags=row["tags"],
+                spent_at=row["spent_at"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def expenses_for_retag(self, include_all: bool = False) -> list[tuple[Expense, str | None]]:
+        where = "" if include_all else " WHERE e.category = 'other' AND e.tags = '[]'"
+        rows = self._conn.execute(
+            "SELECT e.id, e.chat_id, e.kind, e.amount, e.currency, e.description,"
+            " e.merchant, e.category, e.tags, e.spent_at, e.created_at,"
+            " m.text AS message"
+            " FROM expenses e LEFT JOIN messages m ON m.id = e.message_id"
+            f"{where} ORDER BY e.id",
+        ).fetchall()
+        return [
+            (
+                Expense(
+                    id=row["id"],
+                    chat_id=row["chat_id"],
+                    kind=row["kind"],
+                    amount=row["amount"],
+                    currency=row["currency"],
+                    description=row["description"],
+                    merchant=row["merchant"],
+                    category=row["category"],
+                    tags=row["tags"],
+                    spent_at=row["spent_at"],
+                    created_at=row["created_at"],
+                ),
+                row["message"],
+            )
+            for row in rows
+        ]
+
+    def update_expense_classification(
+        self, expense_id: int, *, category: str, tags: list[str], merchant: str | None
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE expenses SET category = ?, tags = ?,"
+                " merchant = COALESCE(?, merchant) WHERE id = ?",
+                (category, json.dumps(tags), merchant, expense_id),
+            )
 
     def upsert_food(
         self,
