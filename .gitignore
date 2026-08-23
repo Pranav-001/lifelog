@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Data (Phase 2+)
+data/
+*.db
+*.sqlite3
