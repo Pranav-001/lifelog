@@ -12,6 +12,12 @@ dependencies = [
 [project.scripts]
 lifelog = "tracker.bot:main"
 
+[dependency-groups]
+dev = [
+    "streamlit>=1.37",
+    "pandas>=2.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

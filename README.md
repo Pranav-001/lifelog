@@ -39,6 +39,18 @@ isolated in `tracker/storage.py`; `/history` shows the last 20 messages.
    user id — put that id into `ALLOWED_USER_IDS` in `.env` and restart so only
    you can use the bot. Send a few messages, then `/history` to see them back.
 
+## Data dashboard
+
+A read-only Streamlit dashboard for browsing everything the bot has stored —
+metrics, entries by category, finance spend charts, and the raw message log:
+
+```
+uv run streamlit run dashboard.py
+```
+
+Opens at http://localhost:8501. Safe to run while the bot is running (the
+database is opened in read-only mode).
+
 ## Project layout
 
 ```
@@ -48,6 +60,7 @@ tracker/
   storage.py    # SQLite persistence (all SQL lives here)
   ai.py         # OpenRouter client: classify + extract + reply
   __main__.py   # allows `python -m tracker`
+dashboard.py    # Streamlit dashboard over the SQLite data (read-only)
 data/           # SQLite database file (gitignored, created on first run)
 ROADMAP.md      # phased plan
 .env.example    # template for local config (never commit .env)
