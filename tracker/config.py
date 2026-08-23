@@ -9,6 +9,8 @@ class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int] = field(default_factory=frozenset)
     db_path: str = "data/lifelog.db"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-4o-mini"
 
 
 def load_settings() -> Settings:
@@ -26,4 +28,12 @@ def load_settings() -> Settings:
         int(part) for part in (p.strip() for p in raw_ids.split(",")) if part
     )
     db_path = os.getenv("DATABASE_PATH", "").strip() or "data/lifelog.db"
-    return Settings(bot_token=token, allowed_user_ids=allowed, db_path=db_path)
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model = os.getenv("OPENROUTER_MODEL", "").strip() or "openai/gpt-4o-mini"
+    return Settings(
+        bot_token=token,
+        allowed_user_ids=allowed,
+        db_path=db_path,
+        openrouter_api_key=api_key,
+        openrouter_model=model,
+    )

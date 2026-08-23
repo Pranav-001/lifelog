@@ -13,7 +13,7 @@ Repo, package layout, config loading, `.env` handling, README.
 
 **Done when:** you message the bot from your phone and it replies.
 
-## Phase 2 — Chat history & storage ✅ (current)
+## Phase 2 — Chat history & storage ✅
 - SQLite database (stdlib `sqlite3`, single file under `data/`, zero setup).
   Chosen over DuckDB: this is an OLTP workload (many small inserts), DuckDB
   is an OLAP engine. All SQL isolated in `tracker/storage.py` behind a small
@@ -26,12 +26,14 @@ Repo, package layout, config loading, `.env` handling, README.
 **Done when:** restarting the bot doesn't lose history and `/history` works.
 This is the foundation for AI context and all trackers.
 
-## Phase 3 — AI brain
-- Connect to the Claude API.
+## Phase 3 — AI brain ✅ (current)
+- Connect via OpenRouter (model-agnostic; pick with `OPENROUTER_MODEL`).
 - Each free-form message is classified (finance / gym / diet / note / question)
   and parsed into structured JSON (amount, exercise, meal, etc.).
 - Bot replies naturally, using recent chat history as context.
-- Structured output stored alongside the raw message.
+- Structured output stored in the `entries` table, linked to the raw message.
+- Graceful degradation: echo mode without an API key, apology reply if the
+  API call fails (message still saved to history).
 
 **Done when:** "spent 250 on lunch" gets classified as a finance entry with
 amount and category extracted, and the bot confirms in natural language.

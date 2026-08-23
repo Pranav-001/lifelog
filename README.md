@@ -8,12 +8,14 @@ Built incrementally, one feature at a time — see [ROADMAP.md](ROADMAP.md).
 
 ## Current status
 
-**Phase 2 — Chat history & storage.** Every text message in both directions is
-persisted to a local SQLite file (`data/lifelog.db` by default, configurable
-via `DATABASE_PATH`). `/history` shows the last 20 messages. SQLite was chosen
-over DuckDB because this workload is many small writes (OLTP), not analytics;
-all SQL is isolated in `tracker/storage.py` so a later move to Postgres or
-MongoDB only replaces that one module. No AI yet — that's Phase 3.
+**Phase 3 — AI brain.** Free-form messages ("spent 250 on lunch",
+"bench 4x8 at 60kg") are sent with recent chat history to a model via
+[OpenRouter](https://openrouter.ai) (any model, set `OPENROUTER_MODEL`).
+The model classifies the message (finance / gym / diet / note / question),
+extracts structured JSON into the `entries` table, and writes the reply the
+bot sends back, tagged with `#category`. Without `OPENROUTER_API_KEY` the bot
+still runs in echo mode. Storage is SQLite (`data/lifelog.db`), all SQL
+isolated in `tracker/storage.py`; `/history` shows the last 20 messages.
 
 ## Setup
 
@@ -44,6 +46,7 @@ tracker/
   bot.py        # Telegram handlers + entry point
   config.py     # .env loading and validation
   storage.py    # SQLite persistence (all SQL lives here)
+  ai.py         # OpenRouter client: classify + extract + reply
   __main__.py   # allows `python -m tracker`
 data/           # SQLite database file (gitignored, created on first run)
 ROADMAP.md      # phased plan

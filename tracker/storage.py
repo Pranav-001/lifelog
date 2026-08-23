@@ -24,6 +24,17 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_messages_chat ON messages (chat_id, id);
     """,
+    """
+    CREATE TABLE entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER REFERENCES messages(id),
+        chat_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_entries_chat_cat ON entries (chat_id, category, id);
+    """,
 ]
 
 
@@ -68,14 +79,39 @@ class Storage:
         direction: str,
         text: str,
         telegram_message_id: int | None = None,
-    ) -> None:
+    ) -> int:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._conn:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "INSERT INTO messages"
                 " (chat_id, user_id, direction, text, telegram_message_id, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (chat_id, user_id, direction, text, telegram_message_id, created_at),
+            )
+        return cursor.lastrowid
+
+    def find_message_id(self, chat_id: int, telegram_message_id: int) -> int | None:
+        row = self._conn.execute(
+            "SELECT id FROM messages WHERE chat_id = ? AND telegram_message_id = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (chat_id, telegram_message_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def save_entry(
+        self,
+        *,
+        chat_id: int,
+        category: str,
+        data: str,
+        message_id: int | None = None,
+    ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO entries (message_id, chat_id, category, data, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (message_id, chat_id, category, data, created_at),
             )
 
     def recent_messages(self, chat_id: int, limit: int = 10) -> list[Message]:
