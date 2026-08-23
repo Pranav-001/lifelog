@@ -35,6 +35,20 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_entries_chat_cat ON entries (chat_id, category, id);
     """,
+    """
+    CREATE TABLE foods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        calories_per_100g REAL,
+        protein_per_100g REAL,
+        fat_per_100g REAL,
+        carbs_per_100g REAL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_foods_chat_name ON foods (chat_id, name);
+    """,
 ]
 
 
@@ -47,6 +61,24 @@ class Message:
     text: str
     telegram_message_id: int | None
     created_at: str
+
+
+@dataclass(frozen=True)
+class Entry:
+    id: int
+    chat_id: int
+    category: str
+    data: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Food:
+    name: str
+    calories_per_100g: float | None
+    protein_per_100g: float | None
+    fat_per_100g: float | None
+    carbs_per_100g: float | None
 
 
 class Storage:
@@ -130,6 +162,75 @@ class Storage:
                 created_at=row["created_at"],
             )
             for row in reversed(rows)
+        ]
+
+    def entries_since(self, chat_id: int, category: str, since_iso: str) -> list[Entry]:
+        rows = self._conn.execute(
+            "SELECT id, chat_id, category, data, created_at FROM entries"
+            " WHERE chat_id = ? AND category = ? AND created_at >= ?"
+            " ORDER BY id",
+            (chat_id, category, since_iso),
+        ).fetchall()
+        return [
+            Entry(
+                id=row["id"],
+                chat_id=row["chat_id"],
+                category=row["category"],
+                data=row["data"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def upsert_food(
+        self,
+        *,
+        chat_id: int,
+        name: str,
+        calories_per_100g: float | None = None,
+        protein_per_100g: float | None = None,
+        fat_per_100g: float | None = None,
+        carbs_per_100g: float | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO foods (chat_id, name, calories_per_100g, protein_per_100g,"
+                " fat_per_100g, carbs_per_100g, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(chat_id, name) DO UPDATE SET"
+                " calories_per_100g = COALESCE(excluded.calories_per_100g, foods.calories_per_100g),"
+                " protein_per_100g = COALESCE(excluded.protein_per_100g, foods.protein_per_100g),"
+                " fat_per_100g = COALESCE(excluded.fat_per_100g, foods.fat_per_100g),"
+                " carbs_per_100g = COALESCE(excluded.carbs_per_100g, foods.carbs_per_100g),"
+                " updated_at = excluded.updated_at",
+                (
+                    chat_id,
+                    name,
+                    calories_per_100g,
+                    protein_per_100g,
+                    fat_per_100g,
+                    carbs_per_100g,
+                    now,
+                    now,
+                ),
+            )
+
+    def list_foods(self, chat_id: int) -> list[Food]:
+        rows = self._conn.execute(
+            "SELECT name, calories_per_100g, protein_per_100g, fat_per_100g,"
+            " carbs_per_100g FROM foods WHERE chat_id = ? ORDER BY name",
+            (chat_id,),
+        ).fetchall()
+        return [
+            Food(
+                name=row["name"],
+                calories_per_100g=row["calories_per_100g"],
+                protein_per_100g=row["protein_per_100g"],
+                fat_per_100g=row["fat_per_100g"],
+                carbs_per_100g=row["carbs_per_100g"],
+            )
+            for row in rows
         ]
 
     def close(self) -> None:

@@ -26,7 +26,7 @@ Repo, package layout, config loading, `.env` handling, README.
 **Done when:** restarting the bot doesn't lose history and `/history` works.
 This is the foundation for AI context and all trackers.
 
-## Phase 3 — AI brain ✅ (current)
+## Phase 3 — AI brain ✅
 - Connect via OpenRouter (model-agnostic; pick with `OPENROUTER_MODEL`).
 - Each free-form message is classified (finance / gym / diet / note / question)
   and parsed into structured JSON (amount, exercise, meal, etc.).
@@ -38,18 +38,28 @@ This is the foundation for AI context and all trackers.
 **Done when:** "spent 250 on lunch" gets classified as a finance entry with
 amount and category extracted, and the bot confirms in natural language.
 
-## Phase 4 — Trackers (one at a time)
+## Phase 4 — Trackers ✅ (current)
+Summaries are computed from the `entries` table the AI already fills — no
+separate per-tracker tables needed yet. Logic lives in `tracker/summaries.py`
+as pure functions; day boundaries use local time (storage is UTC).
+
 ### 4a. Finance
-- Expense/income entries table, categories.
-- `/spend` — today / this week / this month summary.
+- `/spend` — today / this week / this month totals, income, recent expenses.
 
 ### 4b. Gym
-- Training sessions: exercises, sets, reps, weight.
-- `/workout` — last session, weekly volume.
+- `/workout` — sessions this week, weekly volume (sets × reps × weight),
+  last session detail.
 
 ### 4c. Diet
-- Meals with rough calorie/macro estimates from the AI.
-- `/diet` — today's intake summary.
+- `/diet` — today's meals with calories and protein/fat/carbs totals.
+
+### 4d. Food database
+- `foods` table: per-100g calories/protein/fat/carbs, taught in chat via the
+  new `food_info` category ("oats: 380 kcal, 13g protein... per 100g").
+- Known foods are injected into the AI prompt; when all meal items match
+  with grams, totals are computed deterministically in `tracker/nutrition.py`
+  (model does language, Python does math).
+- `/foods` lists the stored foods.
 
 **Done when:** each tracker logs from free-form messages and its summary
 command answers correctly.

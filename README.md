@@ -8,14 +8,24 @@ Built incrementally, one feature at a time — see [ROADMAP.md](ROADMAP.md).
 
 ## Current status
 
-**Phase 3 — AI brain.** Free-form messages ("spent 250 on lunch",
-"bench 4x8 at 60kg") are sent with recent chat history to a model via
-[OpenRouter](https://openrouter.ai) (any model, set `OPENROUTER_MODEL`).
-The model classifies the message (finance / gym / diet / note / question),
-extracts structured JSON into the `entries` table, and writes the reply the
-bot sends back, tagged with `#category`. Without `OPENROUTER_API_KEY` the bot
-still runs in echo mode. Storage is SQLite (`data/lifelog.db`), all SQL
-isolated in `tracker/storage.py`; `/history` shows the last 20 messages.
+**Phase 4 — Trackers.** Free-form messages ("spent 250 on lunch",
+"bench 4x8 at 60kg") are understood by a model via
+[OpenRouter](https://openrouter.ai) (any model, set `OPENROUTER_MODEL`),
+classified, and stored as structured entries in SQLite. Summary commands:
+
+- `/spend` — today / this week / this month totals + recent expenses
+- `/workout` — sessions this week, weekly volume, last session detail
+- `/diet` — today's meals, estimated calories, protein/fat/carbs
+- `/foods` — your personal food database (per-100g macros)
+- `/history` — last 20 raw messages
+
+Teach the bot foods ("oats: 380 kcal, 13g protein, 7g fat, 68g carbs per
+100g") and it stores them; when a meal mentions known foods with weights,
+calories and macros are computed exactly in Python from your data instead
+of the model guessing.
+
+Day boundaries use the machine's local timezone. Without
+`OPENROUTER_API_KEY` the bot still runs in echo mode.
 
 ## Setup
 
@@ -59,6 +69,8 @@ tracker/
   config.py     # .env loading and validation
   storage.py    # SQLite persistence (all SQL lives here)
   ai.py         # OpenRouter client: classify + extract + reply
+  summaries.py  # pure functions: /spend, /workout, /diet text
+  nutrition.py  # deterministic calorie/macro math from the foods table
   __main__.py   # allows `python -m tracker`
 dashboard.py    # Streamlit dashboard over the SQLite data (read-only)
 data/           # SQLite database file (gitignored, created on first run)

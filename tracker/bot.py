@@ -10,6 +10,7 @@ falls back to Phase 2 echo behaviour.
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from telegram import Update
@@ -24,7 +25,9 @@ from telegram.ext import (
 
 from tracker.ai import AIClient
 from tracker.config import Settings, load_settings
-from tracker.storage import Storage
+from tracker.nutrition import enrich_diet
+from tracker.storage import Entry, Storage
+from tracker.summaries import diet_summary, spend_summary, workout_summary
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Your Telegram user id is {user.id} — put it in ALLOWED_USER_IDS in .env "
         "so only you can talk to me.\n\n"
         "Tell me things like 'spent 250 on lunch' or 'bench 4x8 at 60kg' and "
-        "I'll understand and log them. /history shows recent messages.",
+        "I'll understand and log them.\n\n"
+        "Commands: /spend, /workout, /diet, /foods, /history",
     )
 
 
@@ -111,6 +115,65 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _reply(update, context, f"Last {len(messages)} messages (UTC):\n" + "\n".join(lines))
 
 
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+async def cmd_foods(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(context.bot_data["settings"], update):
+        return
+    storage: Storage = context.bot_data["storage"]
+    foods = storage.list_foods(update.message.chat_id)
+    if not foods:
+        await _reply(
+            update,
+            context,
+            "No foods stored yet — tell me e.g. 'oats: 380 kcal, 13g protein, "
+            "7g fat, 68g carbs per 100g' and I'll remember it.",
+        )
+        return
+
+    def n(value: float | None) -> str:
+        return f"{value:g}" if value is not None else "?"
+
+    lines = ["🥗 Known foods (per 100g):"]
+    lines.extend(
+        f"• {f.name} — {n(f.calories_per_100g)} kcal, "
+        f"P {n(f.protein_per_100g)} / F {n(f.fat_per_100g)} / C {n(f.carbs_per_100g)}"
+        for f in foods
+    )
+    await _reply(update, context, "\n".join(lines))
+
+
+def _entries_for(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, category: str, lookback_days: int
+) -> list[Entry]:
+    storage: Storage = context.bot_data["storage"]
+    since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    return storage.entries_since(chat_id, category, since.isoformat(timespec="seconds"))
+
+
+async def cmd_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(context.bot_data["settings"], update):
+        return
+    entries = _entries_for(context, update.message.chat_id, "finance", lookback_days=45)
+    await _reply(update, context, spend_summary(entries, datetime.now().astimezone()))
+
+
+async def cmd_workout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(context.bot_data["settings"], update):
+        return
+    entries = _entries_for(context, update.message.chat_id, "gym", lookback_days=365)
+    await _reply(update, context, workout_summary(entries, datetime.now().astimezone()))
+
+
+async def cmd_diet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(context.bot_data["settings"], update):
+        return
+    entries = _entries_for(context, update.message.chat_id, "diet", lookback_days=2)
+    await _reply(update, context, diet_summary(entries, datetime.now().astimezone()))
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.bot_data["settings"]
     user = update.effective_user
@@ -135,8 +198,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action(ChatAction.TYPING)
     # recent_messages already includes this message — log_incoming ran first
     history = storage.recent_messages(chat_id, limit=CONTEXT_MESSAGES)
+    foods = storage.list_foods(chat_id)
     try:
-        result = await ai.understand(history)
+        result = await ai.understand(history, foods)
     except httpx.HTTPStatusError as e:
         logger.exception("OpenRouter call failed")
         if e.response.status_code == 429:
@@ -165,16 +229,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    if result.category is not None and result.data is not None:
+    data = result.data
+    if result.category == "food_info" and isinstance(data, dict):
+        name = str(data.get("name") or "").strip().lower()
+        if name:
+            storage.upsert_food(
+                chat_id=chat_id,
+                name=name,
+                calories_per_100g=_number(data.get("calories_per_100g")),
+                protein_per_100g=_number(data.get("protein_per_100g")),
+                fat_per_100g=_number(data.get("fat_per_100g")),
+                carbs_per_100g=_number(data.get("carbs_per_100g")),
+            )
+            logger.info("Stored food info: %s", data)
+    elif result.category == "diet" and isinstance(data, dict):
+        data = enrich_diet(data, {f.name: f for f in foods})
+
+    if result.category is not None and data is not None:
         storage.save_entry(
             chat_id=chat_id,
             category=result.category,
-            data=json.dumps(result.data, ensure_ascii=False),
+            data=json.dumps(data, ensure_ascii=False),
             message_id=storage.find_message_id(chat_id, update.message.message_id),
         )
-        logger.info("Logged %s entry: %s", result.category, result.data)
+        logger.info("Logged %s entry: %s", result.category, data)
 
     reply = result.reply
+    if result.category == "diet" and isinstance(data, dict) and data.get("computed"):
+        reply += (
+            f"\n\n📊 {data['calories_estimate']} kcal • P {data['protein_g']}g"
+            f" • F {data['fat_g']}g • C {data['carbs_g']}g (from your food data)"
+        )
     if result.category is not None:
         reply = f"{reply}\n#{result.category}"
     await _reply(update, context, reply)
@@ -225,6 +310,10 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("spend", cmd_spend))
+    app.add_handler(CommandHandler("workout", cmd_workout))
+    app.add_handler(CommandHandler("diet", cmd_diet))
+    app.add_handler(CommandHandler("foods", cmd_foods))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(handle_error)
 
