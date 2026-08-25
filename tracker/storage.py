@@ -85,6 +85,32 @@ MIGRATIONS = [
     WHERE category = 'finance'
       AND CAST(json_extract(data, '$.amount') AS REAL) > 0;
     """,
+    """
+    CREATE TABLE expenses_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER REFERENCES messages(id),
+        kind TEXT NOT NULL DEFAULT 'expense'
+            CHECK (kind IN ('expense', 'income', 'refund')),
+        amount REAL NOT NULL,
+        currency TEXT,
+        description TEXT,
+        merchant TEXT,
+        category TEXT NOT NULL DEFAULT 'other',
+        tags TEXT NOT NULL DEFAULT '[]',
+        spent_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        refund_of INTEGER REFERENCES expenses(id)
+    );
+    INSERT INTO expenses_new (id, chat_id, message_id, kind, amount, currency,
+                              description, merchant, category, tags, spent_at, created_at)
+    SELECT id, chat_id, message_id, kind, amount, currency,
+           description, merchant, category, tags, spent_at, created_at
+    FROM expenses;
+    DROP TABLE expenses;
+    ALTER TABLE expenses_new RENAME TO expenses;
+    CREATE INDEX idx_expenses_chat_date ON expenses (chat_id, spent_at, id);
+    """,
 ]
 
 
@@ -121,6 +147,7 @@ class Expense:
     tags: str  # JSON array
     spent_at: str  # YYYY-MM-DD (local day)
     created_at: str
+    refund_of: int | None = None
 
 
 @dataclass(frozen=True)
@@ -246,13 +273,14 @@ class Storage:
         merchant: str | None = None,
         tags: list[str] | None = None,
         message_id: int | None = None,
+        refund_of: int | None = None,
     ) -> int:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO expenses (chat_id, message_id, kind, amount, currency,"
-                " description, merchant, category, tags, spent_at, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " description, merchant, category, tags, spent_at, created_at, refund_of)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chat_id,
                     message_id,
@@ -265,62 +293,67 @@ class Storage:
                     json.dumps(tags or []),
                     spent_at,
                     created_at,
+                    refund_of,
                 ),
             )
         return cursor.lastrowid
 
+    @staticmethod
+    def _expense_from_row(row: sqlite3.Row) -> Expense:
+        return Expense(
+            id=row["id"],
+            chat_id=row["chat_id"],
+            kind=row["kind"],
+            amount=row["amount"],
+            currency=row["currency"],
+            description=row["description"],
+            merchant=row["merchant"],
+            category=row["category"],
+            tags=row["tags"],
+            spent_at=row["spent_at"],
+            created_at=row["created_at"],
+            refund_of=row["refund_of"],
+        )
+
+    _EXPENSE_COLUMNS = (
+        "id, chat_id, kind, amount, currency, description, merchant,"
+        " category, tags, spent_at, created_at, refund_of"
+    )
+
     def expenses_since(self, chat_id: int, since_spent_at: str) -> list[Expense]:
         rows = self._conn.execute(
-            "SELECT id, chat_id, kind, amount, currency, description, merchant,"
-            " category, tags, spent_at, created_at FROM expenses"
+            f"SELECT {self._EXPENSE_COLUMNS} FROM expenses"
             " WHERE chat_id = ? AND spent_at >= ? ORDER BY spent_at, id",
             (chat_id, since_spent_at),
         ).fetchall()
-        return [
-            Expense(
-                id=row["id"],
-                chat_id=row["chat_id"],
-                kind=row["kind"],
-                amount=row["amount"],
-                currency=row["currency"],
-                description=row["description"],
-                merchant=row["merchant"],
-                category=row["category"],
-                tags=row["tags"],
-                spent_at=row["spent_at"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+        return [self._expense_from_row(row) for row in rows]
+
+    def recent_expenses(self, chat_id: int, limit: int = 10) -> list[Expense]:
+        rows = self._conn.execute(
+            f"SELECT {self._EXPENSE_COLUMNS} FROM expenses"
+            " WHERE chat_id = ? AND kind = 'expense' ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        return [self._expense_from_row(row) for row in rows]
+
+    def get_expense(self, chat_id: int, expense_id: int) -> Expense | None:
+        row = self._conn.execute(
+            f"SELECT {self._EXPENSE_COLUMNS} FROM expenses"
+            " WHERE chat_id = ? AND id = ?",
+            (chat_id, expense_id),
+        ).fetchone()
+        return self._expense_from_row(row) if row else None
 
     def expenses_for_retag(self, include_all: bool = False) -> list[tuple[Expense, str | None]]:
         where = "" if include_all else " WHERE e.category = 'other' AND e.tags = '[]'"
         rows = self._conn.execute(
             "SELECT e.id, e.chat_id, e.kind, e.amount, e.currency, e.description,"
-            " e.merchant, e.category, e.tags, e.spent_at, e.created_at,"
+            " e.merchant, e.category, e.tags, e.spent_at, e.created_at, e.refund_of,"
             " m.text AS message"
             " FROM expenses e LEFT JOIN messages m ON m.id = e.message_id"
             f"{where} ORDER BY e.id",
         ).fetchall()
-        return [
-            (
-                Expense(
-                    id=row["id"],
-                    chat_id=row["chat_id"],
-                    kind=row["kind"],
-                    amount=row["amount"],
-                    currency=row["currency"],
-                    description=row["description"],
-                    merchant=row["merchant"],
-                    category=row["category"],
-                    tags=row["tags"],
-                    spent_at=row["spent_at"],
-                    created_at=row["created_at"],
-                ),
-                row["message"],
-            )
-            for row in rows
-        ]
+        return [(self._expense_from_row(row), row["message"]) for row in rows]
 
     def update_expense_classification(
         self, expense_id: int, *, category: str, tags: list[str], merchant: str | None

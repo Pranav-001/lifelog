@@ -203,8 +203,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # recent_messages already includes this message — log_incoming ran first
     history = storage.recent_messages(chat_id, limit=CONTEXT_MESSAGES)
     foods = storage.list_foods(chat_id)
+    recent_expenses = storage.recent_expenses(chat_id, limit=10)
     try:
-        result = await ai.understand(history, foods)
+        result = await ai.understand(history, foods, recent_expenses)
     except httpx.HTTPStatusError as e:
         logger.exception("OpenRouter call failed")
         if e.response.status_code == 429:
@@ -253,20 +254,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if result.category == "finance" and isinstance(data, dict):
         parsed = finance.normalize(data, datetime.now().astimezone().date())
         if parsed is not None:
+            category = parsed.category
+            original = None
+            if parsed.kind == "refund" and parsed.refund_of is not None:
+                original = storage.get_expense(chat_id, parsed.refund_of)
+                if original is not None:
+                    category = original.category
             storage.add_expense(
                 chat_id=chat_id,
                 kind=parsed.kind,
                 amount=parsed.amount,
-                category=parsed.category,
+                category=category,
                 spent_at=parsed.spent_at.isoformat(),
                 currency=parsed.currency,
                 description=parsed.description,
                 merchant=parsed.merchant,
                 tags=parsed.tags,
                 message_id=storage.find_message_id(chat_id, update.message.message_id),
+                refund_of=original.id if original is not None else None,
             )
             logger.info("Logged expense: %s", parsed)
             expense_line = finance.confirmation_line(parsed)
+            if original is not None:
+                expense_line += f"  (for: {original.description or original.merchant or f'expense {original.id}'})"
 
     if result.category is not None and data is not None and expense_line is None:
         storage.save_entry(

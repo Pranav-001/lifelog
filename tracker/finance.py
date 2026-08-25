@@ -28,6 +28,7 @@ CATEGORIES = [
     "education",
     "personal-care",
     "gifts",
+    "investments",
     "fees",
     "other",
 ]
@@ -43,6 +44,7 @@ class ParsedExpense:
     category: str
     tags: list[str]
     spent_at: date
+    refund_of: int | None = None
 
 
 def normalize(data: dict, today: date) -> ParsedExpense | None:
@@ -50,13 +52,16 @@ def normalize(data: dict, today: date) -> ParsedExpense | None:
     if not isinstance(amount, (int, float)) or amount <= 0:
         return None
 
-    kind = data.get("kind") if data.get("kind") in ("expense", "income") else "expense"
+    kind = data.get("kind") if data.get("kind") in ("expense", "income", "refund") else "expense"
 
     category = str(data.get("category") or "").strip().lower()
     if kind == "income":
         category = "income"
     elif category not in CATEGORIES:
         category = "other"
+
+    raw_refund_of = data.get("refund_of")
+    refund_of = raw_refund_of if kind == "refund" and isinstance(raw_refund_of, int) else None
 
     raw_tags = data.get("tags")
     tags = []
@@ -86,11 +91,14 @@ def normalize(data: dict, today: date) -> ParsedExpense | None:
         category=category,
         tags=tags,
         spent_at=spent_at,
+        refund_of=refund_of,
     )
 
 
 def confirmation_line(e: ParsedExpense) -> str:
     amount = f"{e.amount:,.0f}" + (f" {e.currency}" if e.currency else "")
+    if e.kind == "refund":
+        amount = f"+{amount} refund"
     line = " • ".join([amount, e.category, e.spent_at.strftime("%d %b")])
     if e.tags:
         line += "  " + " ".join(f"#{t}" for t in e.tags)
@@ -126,8 +134,11 @@ def spend_summary(rows: list[Expense], now: datetime) -> str:
     if not expenses and not income_this_month:
         return "No expenses logged yet — tell me things like 'spent 250 on lunch yesterday'."
 
+    def signed(row: Expense) -> float:
+        return -row.amount if row.kind == "refund" else row.amount
+
     def total(since: date) -> float:
-        return sum(row.amount for day, row in expenses if day >= since)
+        return sum(signed(row) for day, row in expenses if day >= since)
 
     lines = [
         "💸 Spending",
@@ -141,7 +152,7 @@ def spend_summary(rows: list[Expense], now: datetime) -> str:
     by_category: dict[str, float] = {}
     for day, row in expenses:
         if day >= month_start:
-            by_category[row.category] = by_category.get(row.category, 0.0) + row.amount
+            by_category[row.category] = by_category.get(row.category, 0.0) + signed(row)
     if by_category:
         lines.append("")
         lines.append("By category (this month):")
@@ -155,7 +166,8 @@ def spend_summary(rows: list[Expense], now: datetime) -> str:
         for day, row in recent:
             what = row.description or row.merchant or ""
             tags = "".join(f" #{t}" for t in _tags_of(row))
+            shown = f"+{row.amount:,.0f} refund" if row.kind == "refund" else f"{row.amount:,.0f}"
             lines.append(
-                f"• {day.strftime('%d %b')} — {row.amount:,.0f} {what} ({row.category}){tags}"
+                f"• {day.strftime('%d %b')} — {shown} {what} ({row.category}){tags}"
             )
     return "\n".join(lines)

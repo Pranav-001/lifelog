@@ -55,7 +55,8 @@ def load_tables(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
         )
         expenses = pd.read_sql_query(
             "SELECT id, chat_id, kind, amount, currency, description, merchant,"
-            " category, tags, spent_at FROM expenses ORDER BY spent_at DESC, id DESC",
+            " category, tags, spent_at, refund_of"
+            " FROM expenses ORDER BY spent_at DESC, id DESC",
             conn,
         )
     finally:
@@ -148,6 +149,8 @@ with tab_finance:
     else:
         exp = expenses[expenses["kind"] != "income"].copy()
         exp["date"] = exp["spent_at"]
+        # refunds count against spend
+        exp.loc[exp["kind"] == "refund", "amount"] *= -1
 
         def spent(day_from, day_to=None):
             sel = exp[exp["date"] >= day_from]
@@ -395,7 +398,7 @@ with tab_edit:
         st.info("No expenses yet.")
     else:
         exp_grid = expenses[
-            ["id", "spent_at", "kind", "amount", "category", "tags", "description", "merchant"]
+            ["id", "spent_at", "kind", "amount", "category", "tags", "description", "merchant", "refund_of"]
         ].head(200).copy()
         exp_grid.insert(0, "delete", False)
         edited_exp = st.data_editor(
@@ -403,7 +406,10 @@ with tab_edit:
             column_config={
                 "delete": st.column_config.CheckboxColumn("delete"),
                 "spent_at": st.column_config.DateColumn("spent on"),
-                "kind": st.column_config.SelectboxColumn("kind", options=["expense", "income"]),
+                "kind": st.column_config.SelectboxColumn(
+                    "kind", options=["expense", "income", "refund"]
+                ),
+                "refund_of": st.column_config.NumberColumn("refund of (id)", step=1),
                 "amount": st.column_config.NumberColumn("amount", min_value=0.0),
                 "category": st.column_config.SelectboxColumn(
                     "category", options=EXPENSE_CATEGORY_OPTIONS
@@ -417,14 +423,20 @@ with tab_edit:
         if st.button("💾 Save expense changes"):
             original = exp_grid.set_index("id")
             statements, errors = [], []
-            editable = ["spent_at", "kind", "amount", "category", "tags", "description", "merchant"]
+            editable = [
+                "spent_at", "kind", "amount", "category", "tags",
+                "description", "merchant", "refund_of",
+            ]
             for _, row in edited_exp.iterrows():
                 rid = int(row["id"])
                 if row["delete"]:
                     statements.append(("DELETE FROM expenses WHERE id = ?", (rid,)))
                     continue
                 before = original.loc[rid]
-                if all(row[c] == before[c] for c in editable):
+                if all(
+                    row[c] == before[c] or (pd.isna(row[c]) and pd.isna(before[c]))
+                    for c in editable
+                ):
                     continue
                 try:
                     tags = json.loads(row["tags"] or "[]")
@@ -438,8 +450,8 @@ with tab_edit:
                 statements.append(
                     (
                         "UPDATE expenses SET spent_at = ?, kind = ?, amount = ?,"
-                        " category = ?, tags = ?, description = ?, merchant = ?"
-                        " WHERE id = ?",
+                        " category = ?, tags = ?, description = ?, merchant = ?,"
+                        " refund_of = ? WHERE id = ?",
                         (
                             str(row["spent_at"]),
                             row["kind"],
@@ -448,6 +460,7 @@ with tab_edit:
                             json.dumps([str(t) for t in tags]),
                             row["description"] or None,
                             row["merchant"] or None,
+                            None if pd.isna(row["refund_of"]) else int(row["refund_of"]),
                             rid,
                         ),
                     )

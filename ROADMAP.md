@@ -53,6 +53,10 @@ as pure functions; day boundaries use local time (storage is UTC).
   0-3 cross-cutting tags (trip, office...); everything validated in Python.
 - `/spend` — today / week / month totals, income, category breakdown,
   recent expenses with dates and tags.
+- Refunds: kind `refund` linked via `refund_of` to the original expense
+  (recent expenses with ids are shown to the model so it can match);
+  a linked refund inherits the original's category and subtracts from
+  spend totals.
 
 ### 4b. Gym
 - `/workout` — sessions this week, weekly volume (sets × reps × weight),
